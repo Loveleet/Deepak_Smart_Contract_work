@@ -1,0 +1,36 @@
+{
+  "name": "@lab/contracts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "clean": "rm -rf artifacts cache typechain",
+    "build": "hardhat compile",
+    "test": "hardhat test",
+    "lint": "eslint \"{contracts,test,scripts}/**/*.ts\"",
+    "typecheck": "tsc --project tsconfig.json",
+    "deploy:testnet": "hardhat run scripts/deploy.ts --network testnet",
+    "verify:testnet": "ts-node scripts/verify.ts",
+    "postdeploy": "ts-node scripts/postdeploy.ts"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^3.0.5",
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@typechain/ethers-v6": "^0.5.1",
+    "@typechain/hardhat": "^9.1.0",
+    "@types/chai": "^4.3.11",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.12.7",
+    "chai": "^4.4.1",
+    "ethers": "^6.12.0",
+    "hardhat": "^2.22.1",
+    "tsconfig-paths": "^4.2.0",
+    "ts-node": "^10.9.2",
+    "typechain": "^8.3.1",
+    "typescript": "^5.4.5"
+  }
+}

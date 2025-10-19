@@ -1,0 +1,29 @@
+{
+  "name": "lab-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@8.15.5",
+  "scripts": {
+    "clean": "pnpm -r exec rm -rf dist build cache artifacts typechain coverage node_modules/.cache || true",
+    "dev": "pnpm -r --parallel run dev",
+    "deploy:testnet": "pnpm --filter contracts run deploy:testnet",
+    "verify:testnet": "pnpm --filter contracts run verify:testnet",
+    "postdeploy": "pnpm --filter contracts run postdeploy",
+    "test": "pnpm --filter contracts run test",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "workspaces": [
+    "contracts",
+    "backend",
+    "frontend",
+    "shared"
+  ],
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.2.5",
+    "tsx": "^4.7.1",
+    "typescript": "^5.4.5"
+  }
+}
