@@ -12,6 +12,8 @@ const accounts = PRIVATE_KEY ? [PRIVATE_KEY] : [];
 
 const isBsc = !CHAIN || CHAIN === "bscTestnet";
 
+
+
 const config: HardhatUserConfig = {
   solidity: {
     version: "0.8.20",

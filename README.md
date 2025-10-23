@@ -1,8 +1,9 @@
 # LAB Token Monorepo
 
-Production-ready pnpm workspace for an ERC20/BEP20-style dApp targeting BSC Testnet (default) or Ethereum Sepolia. The project bundles Solidity contracts, a hardened Node/Express backend, a React + Vite frontend, shared ABI/types, and CI automation.
+Production-ready pnpm workspace for the GAIN-USDT peer-to-peer revenue platform. The stack spans Solidity contracts, a hardened Node/Express backend, a React + Vite frontend, shared ABI/types, and CI automation. It targets Binance Smart Chain (Testnet by default) and can be re-pointed at other EVM networks when needed.
 
 ## Table of Contents
+- [Product Overview](#product-overview)
 - [Tech Stack](#tech-stack)
 - [Monorepo Layout](#monorepo-layout)
 - [Prerequisites](#prerequisites)
@@ -19,6 +20,15 @@ Production-ready pnpm workspace for an ERC20/BEP20-style dApp targeting BSC Test
 - [Continuous Integration](#continuous-integration)
 - [Post-Deployment Artifacts](#post-deployment-artifacts)
 
+## Product Overview
+- **Mission:** Enable a provably fair, 12-slot matrix earnings engine where every transaction distributes USDT instantly to sponsors, uplines, royalty achievers, and the creator vault.
+- **Trustless & Transparent:** All logic executes on-chain; funds move wallet-to-wallet without custodial holding. Anyone can audit slot purchases, royalty routes, and balances.
+- **Immutable & Unstoppable:** Once the contract is deployed on BSC, it cannot be modified. Community governance and new deployments drive evolution.
+- **Slot Mechanics:** The first slots begin at 20–25 USDT and double through twelve tiers (Star → Blue Diamond). Slots never expire, unlocking permanent earning potential.
+- **Distribution Model:** 70% uplines (1-2-3-4 spillover), 12% direct sponsor commission, 15% royalty across levels 5–11 (5%,4%,2%,1%,1%,1%,1%), 3% creator operations wallet. Any unassigned royalty remainder flows to the flash vault.
+- **Royalty Qualifications:** Earning each royalty band requires four qualified directs at or above the respective slot level, incentivising team growth.
+- **User Experience:** The React dashboard is a convenience layer; power users can interact directly with the contract via wallets/dApps by calling `registerApproval` and `slotBuy`.
+
 ## Tech Stack
 
 - **Contracts:** Solidity `^0.8.20`, Hardhat, TypeChain, OpenZeppelin (AccessControl, Pausable, ReentrancyGuard, ERC20Permit)
@@ -29,7 +39,7 @@ Production-ready pnpm workspace for an ERC20/BEP20-style dApp targeting BSC Test
 ## Monorepo Layout
 
 ```
-contracts/   Hardhat project and LABToken.sol implementation
+contracts/   Hardhat project with GAINUSDTDistributor and mocks
 backend/     Express API proxying privileged token flows
 frontend/    Vite React dashboard with wallet integrations
 shared/      Shared ABI + type helpers
@@ -58,6 +68,11 @@ CHAIN=bscTestnet   # or sepolia
 RPC_URL=https://bsc-testnet.publicnode.com
 PRIVATE_KEY=0xYOUR_PRIVATE_KEY
 BSC_SCAN_API_KEY=YOUR_BSCSCAN_KEY
+USDT_ADDRESS=0xc9722e88c255f2c793867c19a2f7c8b62a97e5
+USDT_DECIMALS=6
+CREATOR_WALLET=0xYOUR_CREATOR_WALLET
+FLASH_WALLET=0xYOUR_FLASH_WALLET
+ADMIN_WALLET=0xYOUR_ADMIN_WALLET
 ```
 
 `contracts/.env`
@@ -68,6 +83,11 @@ RPC_URL=https://bsc-testnet.publicnode.com
 BSC_SCAN_API_KEY=YOUR_BSCSCAN_KEY
 ETHERSCAN_API_KEY=
 CHAIN=bscTestnet
+USDT_ADDRESS=0xc9722e88c255f2c793867c19a2f7c8b62a97e5
+USDT_DECIMALS=6
+CREATOR_WALLET=0xYOUR_CREATOR_WALLET
+FLASH_WALLET=0xYOUR_FLASH_WALLET
+ADMIN_WALLET=0xYOUR_ADMIN_WALLET
 ```
 
 `backend/.env`
@@ -94,7 +114,7 @@ VITE_WALLETCONNECT_PROJECT_ID=YOUR_WC_PROJECT_ID
 
 ```bash
 pnpm dev                  # run backend + frontend together
-pnpm run deploy:testnet   # compile & deploy LABToken to configured testnet
+pnpm run deploy:testnet   # compile & deploy GAINUSDTDistributor to the configured network
 pnpm run verify:testnet   # verify contract on BscScan/Sepolia
 pnpm run postdeploy       # sync ABI/address to backend & frontend
 pnpm --filter contracts test
@@ -108,11 +128,11 @@ just test-contracts
 
 ## Deployment & Verification
 
-1. Populate root and `contracts/.env`.
+1. Populate root and `contracts/.env` with the target USDT token, creator/flash wallets, and admin key.
 2. `pnpm run deploy:testnet`
-3. Copy the transaction hash/output – deployment prints the LABToken address and writes `shared/artifacts.json` + `shared/constructor-args.json`.
-4. `pnpm run postdeploy` to sync artifacts across packages.
-5. `pnpm run verify:testnet` to verify on the configured explorer.
+3. Copy the transaction hash/output – the script prints the `GAINUSDTDistributor` address and writes `shared/artifacts.json` + `shared/constructor-args.json` (including the ABI).
+4. `pnpm run postdeploy` to sync artifacts across packages (backend + frontend will now point to the fresh deployment).
+5. `pnpm run verify:testnet` to submit verification to BscScan (requires `BSC_SCAN_API_KEY`).
 
 ## Backend API
 
@@ -134,16 +154,24 @@ Key endpoints (`X-API-Key` required for admin routes):
 # Read config
 curl http://localhost:4000/config
 
-# Set fees (admin)
-curl -X POST http://localhost:4000/set-fees \
+# Read user profile
+curl http://localhost:4000/user/0x0000000000000000000000000000000000000001
+
+# Pause contract (admin)
+curl -X POST http://localhost:4000/admin/pause \
+  -H "X-API-Key: changeme"
+
+# Update creator wallet (admin)
+curl -X POST http://localhost:4000/admin/set-creator-wallet \
   -H "Content-Type: application/json" \
   -H "X-API-Key: changeme" \
-  -d '{"feeType":"slotBuy","config":{"platformFeeBps":100,"creatorFeeBps":50,"royaltyFeeBps":25,"referrerFeeBps":25}}'
+  -d '{"wallet":"0x1234..."}'
 
-# Slot buy transfer
-curl -X POST http://localhost:4000/slot-buy \
+# Withdraw USDT (admin)
+curl -X POST http://localhost:4000/admin/withdraw-usdt \
   -H "Content-Type: application/json" \
-  -d '{"recipient":"0x...","amount":"10","referrer":"0x..."}'
+  -H "X-API-Key: changeme" \
+  -d '{"to":"0xabc...","amount":"150"}'
 ```
 
 See `backend/openapi.yaml` for the full OpenAPI spec.
@@ -157,10 +185,10 @@ pnpm --filter frontend dev
 Features:
 
 - Wallet connect (MetaMask + WalletConnect)
-- Live balance + fee dashboard
-- Forms for every custom transfer method with decoded receipts
-- Admin panel for fee/wallet management
-- Toasted status + validation errors
+- Live distributor snapshot (slot prices, royalty splits, wallets)
+- Guided workflow for `approve` → `registerApproval` → `slotBuy`
+- Real-time transaction toasts with explorer links
+- Admin console to pause/unpause, update wallets, withdraw USDT, recover dust tokens
 
 ## Testing
 
@@ -172,29 +200,28 @@ pnpm --filter frontend run typecheck
 
 ## Local Hardhat Testing Walkthrough
 
-Want to exercise every transfer flow against a local blockchain? Follow these exact steps (the same ones used to validate the dashboard):
+Spin up a disposable environment to validate the full approval → slot purchase flow locally:
 
-1. **Launch Hardhat node**  
+1. **Start a node**
    ```bash
    pnpm --filter contracts exec hardhat node
-   ```  
-   Keep this terminal open. It prints 20 funded accounts and their private keys.
+   ```
+   Keep this terminal running; Hardhat exposes funded test accounts here.
 
-2. **Deploy LABToken to the node**  
-   In a second terminal:  
+2. **Deploy MockUSDT + distributor**
    ```bash
    HARDHAT_NETWORK=localhost pnpm --filter contracts exec node scripts/deploy-local.cjs
-   ```  
-   The script deploys `LABToken`, applies default fees, and writes `shared/artifacts.json`.
+   ```
+   Outputs the MockUSDT and `GAINUSDTDistributor` addresses and writes them to `shared/artifacts.json`.
 
-3. **Sync artifacts to backend/frontend**  
+3. **Sync artifacts to apps**
    ```bash
    pnpm run postdeploy
    ```
 
-4. **Configure env files for the local chain**
+4. **Configure env files**
    - `backend/.env`
-     ```
+     ```bash
      PORT=4000
      RPC_URL=http://127.0.0.1:8545
      PRIVATE_KEY_BACKEND_SIGNER=ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
@@ -202,44 +229,37 @@ Want to exercise every transfer flow against a local blockchain? Follow these ex
      CHAIN_ID=31337
      ```
    - `frontend/.env`
-     ```
+     ```bash
      VITE_BACKEND_URL=http://localhost:4000
      VITE_CHAIN_ID=31337
      VITE_WALLETCONNECT_PROJECT_ID=demo
      ```
 
-5. **Start services**
+5. **Run backend & frontend**
    ```bash
    pnpm --filter backend dev
    pnpm --filter frontend dev
    ```
 
-6. **Connect MetaMask**
-   - Add a custom network: RPC `http://127.0.0.1:8545`, Chain ID `31337`.
-   - Import Hardhat account #0 with private key  
-     `ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80`.
-   - Import the LAB token address printed during deployment (default `0x5FbDB2315678afecb367f032d93F642f64180aa3` on a fresh node).
+6. **Wallet setup**
+   - Add network → RPC `http://127.0.0.1:8545`, Chain ID `31337`.
+   - Import Hardhat account #0 (private key `ac0974…ff80`).
+   - Add MockUSDT (address printed in step 2).
 
-7. **Copy/paste test inputs in the dashboard**  
-   - Slot Buy:  
-     Recipient `0x70997970C51812dc3A010C7d01b50e0d17dc79C8`, Amount `100`, Referrer `0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65`
-   - Direct Commission:  
-     Seller `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC`, Amount `50`
-   - Royalty Transfer:  
-     Recipient `0x90F79bf6EB2c4f870365E785982E1f101E93b906`, Amount `25`
-   - Super Royalty Transfer:  
-     Recipient `0x70997970C51812dc3A010C7d01b50e0d17dc79C8`, Amount `200`,  
-     Payees `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC, 0x90F79bf6EB2c4f870365E785982E1f101E93b906`,  
-     BPS `6000, 3000`
-   - Creator Transfer:  
-     Recipient `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC`, Amount `75`
-   - Flash Transfer (requires API key field set to `changeme`):  
-     To `0x90F79bf6EB2c4f870365E785982E1f101E93b906`, Amount `30`
+7. **Test the flow**
+   1. Approve MockUSDT for the distributor contract.
+   2. Register the approval and pause a second so the next block mines.
+   3. Enter a sponsor (e.g. `0x70997970C51812dc3A010C7d01b50e0d17dc79C8`) and click **Buy Slot 1**.
+   4. Verify results from the backend:
+      ```bash
+      curl http://localhost:4000/user/0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 | jq
+      curl http://localhost:4000/user/0x70997970C51812dc3A010C7d01b50e0d17dc79C8 | jq
+      ```
+      Expect the buyer to show `maxSlot: 1` and the sponsor to show `qualifiedDirects` level 1 = 1.
+   5. (Optional) In the Hardhat console fund another account with MockUSDT, switch MetaMask to it, set yourself as sponsor, and repeat steps 1–4 to watch the direct commission land in your wallet.
 
-   Each submission writes a receipt card showing the decoded event data.
-
-8. **Reset when needed**  
-   Stop backend/frontend, kill the Hardhat node, restart from step 1 to get a clean blockchain.
+8. **Reset**
+   Stop backend/frontend, Ctrl+C the Hardhat node, and repeat from step 1 whenever you need a fresh chain.
 
 ## Continuous Integration
 
@@ -253,49 +273,24 @@ Three GitHub Action workflows (`contracts-ci`, `backend-ci`, `frontend-ci`) run 
 
 ## Connecting to an Existing Deployment
 
-If you already have a LABToken (or compatible contract) running on a public network, you can point this stack at it without redeploying:
+If you already have a `GAINUSDTDistributor` deployed (for example the production mUSDT distributor on BSC Testnet), you can point the stack at it without redeploying:
 
 1. **Collect contract details**
-   - Deployed address
-   - ABI (copy from your verified source or block explorer)
-   - Chain identifier (e.g. `97` for BSC Testnet, `11155111` for Sepolia)
+   - Distributor address
+   - ABI (from your verified source or explorer)
+   - USDT token address used by the distributor
+   - Chain identifier (e.g. `97` for BSC Testnet)
 
 2. **Edit `shared/artifacts.json`**
    ```json
    {
      "chain": "bscTestnet",
      "addresses": {
-       "LABToken": "0xYourLiveTokenAddress"
+       "GAINUSDTDistributor": "0xYourDistributorAddress",
+       "USDT": "0xc9722e88c255f2c793867c19a2f7c8b62a97e5"
      },
      "abis": {
-       "LABToken": [ ... ABI JSON ... ]
-     },
-     "updatedAt": "2025-10-18T12:34:56.000Z"
-   }
-   ```
-
-   **Example** (Sepolia deployment):
-   ```json
-   {
-     "chain": "sepolia",
-     "addresses": {
-       "LABToken": "0x1234567890abcdef1234567890abcdef12345678"
-     },
-     "abis": {
-       "LABToken": [
-         {
-           "inputs": [
-             { "internalType": "address", "name": "recipient", "type": "address" },
-             { "internalType": "uint256", "name": "amount", "type": "uint256" },
-             { "internalType": "address", "name": "referrer", "type": "address" }
-           ],
-           "name": "slotBuy",
-           "outputs": [],
-           "stateMutability": "nonpayable",
-           "type": "function"
-         }
-         // …rest of ABI entries…
-       ]
+       "GAINUSDTDistributor": [ ... ABI JSON ... ]
      },
      "updatedAt": "2025-10-18T12:34:56.000Z"
    }
@@ -310,15 +305,15 @@ If you already have a LABToken (or compatible contract) running on a public netw
    - `backend/.env`
      ```
      PORT=4000
-     RPC_URL=https://sepolia.infura.io/v3/YOUR_KEY
+     RPC_URL=https://bsc-testnet.publicnode.com
      PRIVATE_KEY_BACKEND_SIGNER=0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed
      API_KEY_ADMIN=supersecret
-     CHAIN_ID=11155111
+     CHAIN_ID=97
      ```
    - `frontend/.env`
      ```
      VITE_BACKEND_URL=http://localhost:4000
-     VITE_CHAIN_ID=11155111
+     VITE_CHAIN_ID=97
      VITE_WALLETCONNECT_PROJECT_ID=abc123yourwcprojectid
      ```
 
@@ -330,7 +325,7 @@ If you already have a LABToken (or compatible contract) running on a public netw
 
 6. **Verify**
    - Hit `GET /config` and `GET /balance/:address` to confirm the backend can read on-chain state.
-   - Use the dashboard to exercise transfers. Admin routes (set fees/wallets, flash transfer) still require the backend signer to hold `DEFAULT_ADMIN_ROLE`, `FEE_MANAGER_ROLE`, and `FLASH_ROLE`.
+   - Use the dashboard to approve/register/execute slot purchases against the live distributor. Admin routes (pause/unpause, wallet updates, withdrawals) still require the backend signer to hold the necessary roles.
 
 With these steps, the frontend and backend operate against the existing deployment without code changes.
 
@@ -339,9 +334,9 @@ With these steps, the frontend and backend operate against the existing deployme
 Want to run the full stack on Binance Smart Chain Testnet (Chapel)? Follow this checklist:
 
 1. **Prereqs**
-   - Testnet BNB (grab from the official faucet)
+   - Testnet BNB (claim from https://testnet.bnbchain.org/faucet-smart)
    - RPC endpoint, e.g. `https://bsc-testnet.publicnode.com`
-   - Deployer/admin private key (will receive the LAB supply and hold admin roles)
+   - Deployer/admin private key (receives contract roles and royalty authority)
    - Optional: BscScan API key for contract verification
 
 2. **Set environment variables**
@@ -351,6 +346,11 @@ Want to run the full stack on Binance Smart Chain Testnet (Chapel)? Follow this 
      RPC_URL=https://bsc-testnet.publicnode.com
      PRIVATE_KEY=0xYOUR_TESTNET_DEPLOYER_KEY
      BSC_SCAN_API_KEY=YOUR_BSCSCAN_KEY
+     USDT_ADDRESS=0xc9722e88c255f2c793867c19a2f7c8b62a97e5
+     USDT_DECIMALS=6
+     CREATOR_WALLET=0xYOUR_CREATOR_WALLET
+     FLASH_WALLET=0xYOUR_FLASH_WALLET
+     ADMIN_WALLET=0xYOUR_ADMIN_WALLET
      ```
    - `contracts/.env`
      ```
@@ -359,6 +359,11 @@ Want to run the full stack on Binance Smart Chain Testnet (Chapel)? Follow this 
      BSC_SCAN_API_KEY=YOUR_BSCSCAN_KEY
      ETHERSCAN_API_KEY=
      CHAIN=bscTestnet
+     USDT_ADDRESS=0xc9722e88c255f2c793867c19a2f7c8b62a97e5
+     USDT_DECIMALS=6
+     CREATOR_WALLET=0xYOUR_CREATOR_WALLET
+     FLASH_WALLET=0xYOUR_FLASH_WALLET
+     ADMIN_WALLET=0xYOUR_ADMIN_WALLET
      ```
    - `backend/.env`
      ```
@@ -375,11 +380,11 @@ Want to run the full stack on Binance Smart Chain Testnet (Chapel)? Follow this 
      VITE_WALLETCONNECT_PROJECT_ID=YOUR_WC_PROJECT_ID
      ```
 
-3. **Deploy LABToken**
+3. **Deploy the slot distributor**
    ```bash
    pnpm run deploy:testnet
    ```
-   Note the printed contract address—`shared/artifacts.json` is updated automatically.
+   The script prints the deployed address and updates `shared/artifacts.json`.
 
 4. **Sync artifacts for frontend/backend**
    ```bash
@@ -399,13 +404,14 @@ Want to run the full stack on Binance Smart Chain Testnet (Chapel)? Follow this 
 
 7. **Use the dashboard**
    - In MetaMask, switch to BSC Testnet and import the deployer/admin account.
-   - Add the deployed LAB token under “Import Tokens”.
-   - Walk through the same transfer forms as in the local walkthrough—transactions will broadcast to the live testnet.
+   - Add the USDT token used by the distributor (e.g. mUSDT at `0xc9722e88c255f2c793867c19a2f7c8b62a97e5`).
+   - Run the workflow: USDT `approve` → `registerApproval` → `slotBuy` and review receipts for upline/direct/royalty flows.
 
-8. **Need to redeploy?** Re-run the deploy script (or edit `shared/artifacts.json` with the new address) and execute `pnpm run postdeploy` again before restarting services.
+8. **Need to redeploy?** Re-run the deploy script (or edit `shared/artifacts.json` with the new address) and execute `pnpm run postdeploy` before restarting services.
 
 ## Notes
 
-- `LABToken` includes ERC20Permit, AccessControl roles (`DEFAULT_ADMIN_ROLE`, `FEE_MANAGER_ROLE`, `FLASH_ROLE`), pausability, safe fee caps, and mint/burn admin gates.
-- All high-level transfer flows (`slotBuy`, `directCommission`, `royaltyTransfer`, `superRoyaltyTransfer`, `creatorTransfer`, `flashTransfer`) are exposed through the backend and surfaced in the frontend dashboard.
+- The codebase now centers on `GAINUSDTDistributor`; a lightweight `MockUSDT` contract is included for local testing.
+- Key roles: `DEFAULT_ADMIN_ROLE`, `PAUSER_ROLE`, and `FUNDS_ROLE`. Only addresses with the appropriate role can pause/unpause or withdraw tokens.
+- The backend surfaces read-only endpoints plus admin utilities (pause/unpause, wallet updates, withdrawals). End-user flows (`approve`, `registerApproval`, `slotBuy`) are executed directly from the frontend via wagmi.
 - Additional conveniences: Justfile shortcuts, OpenAPI spec, shared schema validation, rate limiting, and toast-based UX.

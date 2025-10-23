@@ -5,85 +5,37 @@ const fs = require("fs/promises");
 const path = require("path");
 const hre = require("hardhat");
 
-const NAME = "LAB Token";
-const SYMBOL = "LAB";
-const INITIAL_SUPPLY = "1000000";
-
-const DEFAULT_FEES = [
-  {
-    feeType: 0,
-    config: { platformFeeBps: 100, creatorFeeBps: 50, royaltyFeeBps: 25, referrerFeeBps: 25 }
-  },
-  {
-    feeType: 1,
-    config: { platformFeeBps: 100, creatorFeeBps: 50, royaltyFeeBps: 0, referrerFeeBps: 0 }
-  },
-  {
-    feeType: 2,
-    config: { platformFeeBps: 75, creatorFeeBps: 0, royaltyFeeBps: 75, referrerFeeBps: 0 }
-  },
-  {
-    feeType: 3,
-    config: { platformFeeBps: 75, creatorFeeBps: 25, royaltyFeeBps: 50, referrerFeeBps: 0 }
-  },
-  {
-    feeType: 4,
-    config: { platformFeeBps: 50, creatorFeeBps: 50, royaltyFeeBps: 0, referrerFeeBps: 0 }
-  },
-  {
-    feeType: 5,
-    config: { platformFeeBps: 25, creatorFeeBps: 0, royaltyFeeBps: 0, referrerFeeBps: 0 }
-  }
-];
-
 async function main() {
   const { ethers } = hre;
   const [deployer] = await ethers.getSigners();
   const deployerAddress = await deployer.getAddress();
 
-  console.log(`Deploying LABToken from ${deployerAddress}`);
+  console.log(`Deploying GAINUSDTDistributor (local) from ${deployerAddress}`);
 
-  const LabToken = await ethers.getContractFactory("LABToken");
-  const initialSupply = ethers.parseUnits(INITIAL_SUPPLY, 18);
+  const MockUSDT = await ethers.getContractFactory("MockUSDT");
+  const mockUsdt = await MockUSDT.deploy(6, ethers.parseUnits("10000000", 6));
+  await mockUsdt.waitForDeployment();
+  console.log(`Mock USDT deployed at ${await mockUsdt.getAddress()}`);
 
-  const contract = await LabToken.deploy(
-    NAME,
-    SYMBOL,
-    initialSupply,
-    deployerAddress,
-    deployerAddress,
-    deployerAddress,
-    deployerAddress
-  );
+  const Distributor = await ethers.getContractFactory("GAINUSDTDistributor");
+  const distributor = await Distributor.deploy(await mockUsdt.getAddress(), 6, deployerAddress, deployerAddress);
 
-  await contract.waitForDeployment();
+  await distributor.waitForDeployment();
 
-  const address = await contract.getAddress();
-  console.log(`LABToken deployed at ${address}`);
+  const address = await distributor.getAddress();
+  console.log(`GAINUSDTDistributor deployed at ${address}`);
 
-  for (const { feeType, config } of DEFAULT_FEES) {
-    const tx = await contract.setFees(feeType, config);
-    await tx.wait();
-  }
-
-  const constructorArgs = [
-    NAME,
-    SYMBOL,
-    initialSupply.toString(),
-    deployerAddress,
-    deployerAddress,
-    deployerAddress,
-    deployerAddress
-  ];
+  const constructorArgs = [await mockUsdt.getAddress(), 6, deployerAddress, deployerAddress];
 
   const artifactsPath = path.resolve(__dirname, "../../shared/artifacts.json");
   const artifacts = {
     chain: "hardhat-local",
     addresses: {
-      LABToken: address
+      GAINUSDTDistributor: address,
+      USDT: await mockUsdt.getAddress()
     },
     abis: {
-      LABToken: JSON.parse(contract.interface.formatJson())
+      GAINUSDTDistributor: JSON.parse(distributor.interface.formatJson())
     },
     updatedAt: new Date().toISOString()
   };
@@ -92,9 +44,6 @@ async function main() {
 
   const constructorArgsPath = path.resolve(__dirname, "../../shared/constructor-args.json");
   await fs.writeFile(constructorArgsPath, JSON.stringify(constructorArgs, null, 2));
-
-  const totalSupply = await contract.totalSupply();
-  console.log(`Total supply: ${ethers.formatUnits(totalSupply, 18)} ${SYMBOL}`);
 }
 
 main().catch((error) => {

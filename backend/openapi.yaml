@@ -1,13 +1,13 @@
 openapi: 3.0.3
 info:
-  title: LAB Token Backend API
-  version: 1.0.0
+  title: GAIN-USDT Backend API
+  version: 1.1.0
 servers:
   - url: http://localhost:4000
 paths:
   /health:
     get:
-      summary: Health check
+      summary: Service health & network
       responses:
         "200":
           description: Service health
@@ -20,38 +20,45 @@ paths:
                     type: string
                   chain:
                     type: string
-                  totalSupply:
+                  usdtToken:
                     type: string
   /config:
     get:
-      summary: Get token configuration and fees
+      summary: Distributor configuration snapshot
       responses:
         "200":
-          description: Token configuration
+          description: Distributor configuration
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  name:
+                  chain:
                     type: string
-                  symbol:
+                  contract:
+                    type: object
+                    properties:
+                      address:
+                        type: string
+                  usdtToken:
                     type: string
-                  decimals:
+                  tokenDecimals:
                     type: integer
-                  totalSupply:
+                  creatorWallet:
                     type: string
-                  wallets:
-                    type: object
-                    additionalProperties:
+                  flashWallet:
+                    type: string
+                  slotPrices:
+                    type: array
+                    items:
                       type: string
-                  fees:
+                  royaltyBps:
                     type: object
                     additionalProperties:
-                      $ref: "#/components/schemas/FeeConfig"
-  /balance/{address}:
+                      type: integer
+  /user/{address}:
     get:
-      summary: Get balance of address
+      summary: Fetch user profile data
       parameters:
         - in: path
           name: address
@@ -60,7 +67,7 @@ paths:
             type: string
       responses:
         "200":
-          description: Balance details
+          description: Profile information
           content:
             application/json:
               schema:
@@ -68,15 +75,31 @@ paths:
                 properties:
                   address:
                     type: string
-                  balance:
+                  referrer:
                     type: string
-                  formatted:
-                    type: string
+                  maxSlot:
+                    type: integer
+                  registeredAllowance:
+                    type: object
+                    properties:
+                      allowance:
+                        type: string
+                      blockNum:
+                        type: integer
+                  qualifiedDirects:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        level:
+                          type: integer
+                        count:
+                          type: integer
         "400":
           description: Invalid address
-  /set-fees:
+  /admin/set-creator-wallet:
     post:
-      summary: Update fee configuration
+      summary: Update creator wallet
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -86,16 +109,14 @@ paths:
             schema:
               type: object
               properties:
-                feeType:
-                  $ref: "#/components/schemas/FeeType"
-                config:
-                  $ref: "#/components/schemas/FeeConfig"
+                wallet:
+                  type: string
       responses:
         "200":
           description: Transaction receipt
-  /set-fee-wallets:
+  /admin/set-flash-wallet:
     post:
-      summary: Update fee wallets
+      summary: Update flash wallet
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -105,113 +126,30 @@ paths:
             schema:
               type: object
               properties:
-                platformWallet:
-                  type: string
-                creatorWallet:
-                  type: string
-                royaltyWallet:
+                wallet:
                   type: string
       responses:
         "200":
           description: Transaction receipt
-  /slot-buy:
+  /admin/pause:
     post:
-      summary: Execute slot buy transfer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                recipient:
-                  type: string
-                amount:
-                  type: string
-                referrer:
-                  type: string
+      summary: Pause the contract
+      security:
+        - ApiKeyAuth: []
       responses:
         "200":
           description: Transaction receipt
-  /direct-commission:
+  /admin/unpause:
     post:
-      summary: Execute direct commission transfer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                seller:
-                  type: string
-                amount:
-                  type: string
+      summary: Unpause the contract
+      security:
+        - ApiKeyAuth: []
       responses:
         "200":
           description: Transaction receipt
-  /royalty-transfer:
+  /admin/withdraw-usdt:
     post:
-      summary: Execute royalty transfer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                recipient:
-                  type: string
-                amount:
-                  type: string
-      responses:
-        "200":
-          description: Transaction receipt
-  /super-royalty-transfer:
-    post:
-      summary: Execute super royalty transfer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                recipient:
-                  type: string
-                amount:
-                  type: string
-                payees:
-                  type: array
-                  items:
-                    type: string
-                bps:
-                  type: array
-                  items:
-                    type: integer
-      responses:
-        "200":
-          description: Transaction receipt
-  /creator-transfer:
-    post:
-      summary: Execute creator transfer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                recipient:
-                  type: string
-                amount:
-                  type: string
-      responses:
-        "200":
-          description: Transaction receipt
-  /flash-transfer:
-    post:
-      summary: Execute flash transfer
+      summary: Withdraw USDT (FUNDS_ROLE)
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -228,30 +166,30 @@ paths:
       responses:
         "200":
           description: Transaction receipt
+  /admin/recover-token:
+    post:
+      summary: Recover arbitrary ERC20 (FUNDS_ROLE)
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                to:
+                  type: string
+                amount:
+                  type: string
+      responses:
+        "200":
+          description: Transaction receipt
 components:
   securitySchemes:
     ApiKeyAuth:
       type: apiKey
       in: header
       name: X-API-Key
-  schemas:
-    FeeType:
-      type: string
-      enum:
-        - slotBuy
-        - directCommission
-        - royaltyTransfer
-        - superRoyaltyTransfer
-        - creatorTransfer
-        - flashTransfer
-    FeeConfig:
-      type: object
-      properties:
-        platformFeeBps:
-          type: integer
-        creatorFeeBps:
-          type: integer
-        royaltyFeeBps:
-          type: integer
-        referrerFeeBps:
-          type: integer

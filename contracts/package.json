@@ -11,7 +11,7 @@
     "typecheck": "tsc --project tsconfig.json",
     "deploy:testnet": "hardhat run scripts/deploy.ts --network testnet",
     "verify:testnet": "ts-node scripts/verify.ts",
-    "postdeploy": "ts-node scripts/postdeploy.ts"
+    "postdeploy": "node scripts/postdeploy.cjs"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.0.2",

@@ -13,32 +13,24 @@ async function main() {
   const artifacts = JSON.parse(artifactsRaw);
   const constructorArgs = JSON.parse(constructorArgsRaw);
 
-  if (!artifacts.addresses?.LABToken) {
-    throw new Error("LABToken address missing from artifacts.json");
+  if (!artifacts.addresses?.GAINUSDTDistributor) {
+    throw new Error("GAINUSDTDistributor address missing from artifacts.json");
   }
 
-  const address: string = artifacts.addresses.LABToken;
+  const address: string = artifacts.addresses.GAINUSDTDistributor;
 
-  if (!Array.isArray(constructorArgs) || constructorArgs.length !== 7) {
+  if (!Array.isArray(constructorArgs) || constructorArgs.length !== 4) {
     throw new Error("constructor-args.json is invalid");
   }
 
-  const parsedArgs = [
-    constructorArgs[0],
-    constructorArgs[1],
-    BigInt(constructorArgs[2]),
-    constructorArgs[3],
-    constructorArgs[4],
-    constructorArgs[5],
-    constructorArgs[6]
-  ];
+  const parsedArgs = [...constructorArgs];
 
   await run("verify:verify", {
     address,
     constructorArguments: parsedArgs
   });
 
-  console.log(`Verification submitted for LABToken at ${address}`);
+  console.log(`Verification submitted for GAINUSDTDistributor at ${address}`);
 }
 
 main().catch((error) => {

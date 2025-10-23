@@ -16,6 +16,8 @@ export type { IERC20Errors } from "./@openzeppelin/contracts/interfaces/draft-IE
 export { IERC20Errors__factory } from "./factories/@openzeppelin/contracts/interfaces/draft-IERC6093.sol/IERC20Errors__factory";
 export type { IERC721Errors } from "./@openzeppelin/contracts/interfaces/draft-IERC6093.sol/IERC721Errors";
 export { IERC721Errors__factory } from "./factories/@openzeppelin/contracts/interfaces/draft-IERC6093.sol/IERC721Errors__factory";
+export type { IERC1363 } from "./@openzeppelin/contracts/interfaces/IERC1363";
+export { IERC1363__factory } from "./factories/@openzeppelin/contracts/interfaces/IERC1363__factory";
 export type { IERC5267 } from "./@openzeppelin/contracts/interfaces/IERC5267";
 export { IERC5267__factory } from "./factories/@openzeppelin/contracts/interfaces/IERC5267__factory";
 export type { ERC20 } from "./@openzeppelin/contracts/token/ERC20/ERC20";
@@ -30,6 +32,8 @@ export type { IERC20Permit } from "./@openzeppelin/contracts/token/ERC20/extensi
 export { IERC20Permit__factory } from "./factories/@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit__factory";
 export type { IERC20 } from "./@openzeppelin/contracts/token/ERC20/IERC20";
 export { IERC20__factory } from "./factories/@openzeppelin/contracts/token/ERC20/IERC20__factory";
+export type { SafeERC20 } from "./@openzeppelin/contracts/token/ERC20/utils/SafeERC20";
+export { SafeERC20__factory } from "./factories/@openzeppelin/contracts/token/ERC20/utils/SafeERC20__factory";
 export type { ECDSA } from "./@openzeppelin/contracts/utils/cryptography/ECDSA";
 export { ECDSA__factory } from "./factories/@openzeppelin/contracts/utils/cryptography/ECDSA__factory";
 export type { EIP712 } from "./@openzeppelin/contracts/utils/cryptography/EIP712";
@@ -50,5 +54,7 @@ export type { ShortStrings } from "./@openzeppelin/contracts/utils/ShortStrings"
 export { ShortStrings__factory } from "./factories/@openzeppelin/contracts/utils/ShortStrings__factory";
 export type { Strings } from "./@openzeppelin/contracts/utils/Strings";
 export { Strings__factory } from "./factories/@openzeppelin/contracts/utils/Strings__factory";
-export type { LABToken } from "./contracts/LABToken";
-export { LABToken__factory } from "./factories/contracts/LABToken__factory";
+export type { GAINUSDTDistributor } from "./contracts/GAINUSDTDistributor";
+export { GAINUSDTDistributor__factory } from "./factories/contracts/GAINUSDTDistributor__factory";
+export type { MockUSDT } from "./contracts/mocks/MockUSDT";
+export { MockUSDT__factory } from "./factories/contracts/mocks/MockUSDT__factory";

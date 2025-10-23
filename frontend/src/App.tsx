@@ -1,761 +1,327 @@
-import { type ReactNode, useMemo, useState } from "react";
-import { useAccount } from "wagmi";
-import { type FieldErrors, useForm } from "react-hook-form";
-import { z } from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
+import { useEffect, useMemo, useState } from "react";
+import { useAccount, usePublicClient, useWalletClient } from "wagmi";
+import { parseUnits } from "viem";
+import type { Abi } from "viem";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { Toaster, toast } from "sonner";
+import { toast, Toaster } from "sonner";
 import clsx from "clsx";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { env } from "./providers/wallet";
-import { TxReceipt, TxReceiptCard } from "./components/TxReceipt";
-
-const addressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/, "Invalid address");
-const amountSchema = z.string().regex(/^\d+(\.\d+)?$/, "Amount must be numeric");
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-
-type BackendReceipt = TxReceipt;
+import { TxReceiptCard } from "./components/TxReceipt";
 
 type ConfigResponse = {
-  name: string;
-  symbol: string;
-  decimals: number;
-  totalSupply: string;
-  contract: {
-    address: string;
-    abi: unknown[];
-  };
-  wallets: {
-    platformWallet: string;
-    creatorWallet: string;
-    royaltyWallet: string;
-  };
-  fees: Record<
-    string,
-    {
-      platformFeeBps: number;
-      creatorFeeBps: number;
-      royaltyFeeBps: number;
-      referrerFeeBps: number;
-    }
-  >;
+  chain: string;
+  contract: { address: string; abi: unknown };
+  usdtToken: string;
+  tokenDecimals: number;
+  creatorWallet: string;
+  flashWallet: string;
+  slotPrices: string[];
+  royaltyBps: Record<string, number>;
 };
 
-type BalanceResponse = {
+type UserProfile = {
   address: string;
-  balance: string;
-  formatted: string;
+  referrer: string;
+  maxSlot: number;
+  registeredAllowance: { allowance: string; blockNum: number };
+  qualifiedDirects: Array<{ level: number; count: number }>;
 };
 
-const explorerBase = env.chainId === 11155111 ? "https://sepolia.etherscan.io" : "https://testnet.bscscan.com";
+const erc20Abi = [
+  {
+    type: "function",
+    name: "approve",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "value", type: "uint256" }
+    ],
+    outputs: [{ name: "", type: "bool" }]
+  }
+] as const;
 
-const fetchJson = async <T,>(url: string, options?: RequestInit): Promise<T> => {
-  const response = await fetch(url, options);
+const fetchJson = async <T,>(url: string, init?: RequestInit): Promise<T> => {
+  const response = await fetch(url, init);
   const data = await response.json();
   if (!response.ok) {
-    const message = (data as { error?: string }).error ?? response.statusText;
-    throw new Error(message);
+    throw new Error((data as { error?: string }).error ?? response.statusText);
   }
   return data as T;
 };
 
-const slotBuyFormSchema = z.object({
-  recipient: addressSchema,
-  amount: amountSchema,
-  referrer: addressSchema.optional().default(ZERO_ADDRESS)
-});
+const explorerForChain = (chain: string | number | undefined) => {
+  if (chain === "bscTestnet" || chain === 97) {
+    return "https://testnet.bscscan.com";
+  }
+  if (chain === "bsc" || chain === 56) {
+    return "https://bscscan.com";
+  }
+  if (chain === "hardhat-local" || chain === 31337) {
+    return "http://127.0.0.1:8545";
+  }
+  return "https://etherscan.io";
+};
 
-const directCommissionSchema = z.object({
-  seller: addressSchema,
-  amount: amountSchema
-});
-
-const royaltyTransferSchema = z.object({
-  recipient: addressSchema,
-  amount: amountSchema
-});
-
-const superRoyaltySchema = z
-  .object({
-    recipient: addressSchema,
-    amount: amountSchema,
-    payees: z.string().transform((value) =>
-      value
-        .split(",")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-    ),
-    bps: z.string().transform((value) =>
-      value
-        .split(",")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .map((entry) => Number(entry))
-    )
-  })
-  .refine((data) => data.payees.length === data.bps.length, "Payees and BPS counts must match")
-  .refine((data) => data.bps.every((value) => Number.isFinite(value)), "Invalid BPS value")
-  .refine((data) => data.bps.every((value) => Number.isInteger(value) && value >= 0), "BPS must be integers >= 0")
-  .refine((data) => data.payees.every((entry) => addressSchema.safeParse(entry).success), "Invalid payee address")
-  .refine((data) => data.bps.reduce((acc, cur) => acc + cur, 0) <= 10000, "Sum of BPS must be <= 10000");
-
-const creatorTransferSchema = z.object({
-  recipient: addressSchema,
-  amount: amountSchema
-});
-
-const flashTransferSchema = z.object({
-  to: addressSchema,
-  amount: amountSchema
-});
-
-const setFeeWalletsSchema = z.object({
-  platformWallet: addressSchema,
-  creatorWallet: addressSchema,
-  royaltyWallet: addressSchema
-});
-
-const setFeesSchema = z.object({
-  feeType: z.enum([
-    "slotBuy",
-    "directCommission",
-    "royaltyTransfer",
-    "superRoyaltyTransfer",
-    "creatorTransfer",
-    "flashTransfer"
-  ]),
-  platformFeeBps: z.coerce.number().int().min(0).max(1000),
-  creatorFeeBps: z.coerce.number().int().min(0).max(1000),
-  royaltyFeeBps: z.coerce.number().int().min(0).max(1000),
-  referrerFeeBps: z.coerce.number().int().min(0).max(1000)
-});
-
-const SectionCard = ({ title, description, children }: { title: string; description?: string; children: ReactNode }) => (
+const SectionCard = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-6 shadow-lg shadow-emerald-500/5">
-    <header className="mb-4">
-      <h3 className="text-lg font-semibold text-emerald-300">{title}</h3>
-      {description ? <p className="mt-1 text-sm text-slate-400">{description}</p> : null}
-    </header>
-    {children}
+    <h3 className="text-lg font-semibold text-emerald-300">{title}</h3>
+    <div className="mt-3 space-y-3 text-sm text-slate-200">{children}</div>
   </section>
 );
 
-const FormErrors = ({ errors }: { errors: FieldErrors }) => {
-  const messages = Object.values(errors)
-    .map((error) => {
-      if (!error) {
-        return null;
-      }
-      if ("message" in error && error.message) {
-        return String(error.message);
-      }
-      if ("types" in error && error.types) {
-        return Object.values(error.types)
-          .map(String)
-          .join(", ");
-      }
-      if ("ref" in error && error.ref) {
-        return "Invalid field value";
-      }
-      return null;
-    })
-    .filter(Boolean);
-
-  if (messages.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-      {messages.map((message, index) => (
-        <div key={`${message}-${index}`}>{message}</div>
-      ))}
-    </div>
-  );
-};
-
-function useBackendSubmit(apiKey: string) {
-  return useMemo(() => {
-    const submit = async (endpoint: string, payload: unknown, requireKey = false) => {
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json"
-      };
-      if (requireKey) {
-        if (!apiKey) {
-          throw new Error("API key required");
-        }
-        headers["X-API-Key"] = apiKey;
-      }
-      return fetchJson<BackendReceipt>(`${env.backendUrl}${endpoint}`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload)
-      });
-    };
-    return submit;
-  }, [apiKey]);
-}
-
 const App = () => {
   const { address, isConnected } = useAccount();
-  const [apiKey, setApiKey] = useState("");
-  const submit = useBackendSubmit(apiKey);
+  const publicClient = usePublicClient();
+  const { data: walletClient } = useWalletClient();
 
-  const configQuery = useQuery({
+  useEffect(() => {
+    if (!walletClient) return;
+    (async () => {
+      try {
+        await walletClient.switchChain({ id: 31337 });
+      } catch (error) {
+        console.warn("Unable to switch to Hardhat chain", error);
+      }
+    })();
+  }, [walletClient]);
+
+  const [selectedSlot, setSelectedSlot] = useState(1);
+  const [sponsor, setSponsor] = useState("");
+  const [lastTx, setLastTx] = useState<{ hash: string; label: string } | null>(null);
+
+  const configQuery = useQuery<ConfigResponse>({
     queryKey: ["config"],
     queryFn: () => fetchJson<ConfigResponse>(`${env.backendUrl}/config`),
-    refetchInterval: 15_000
+    refetchInterval: 30000
   });
 
-  const balanceQuery = useQuery({
-    queryKey: ["balance", address],
-    queryFn: () => fetchJson<BalanceResponse>(`${env.backendUrl}/balance/${address}`),
-    enabled: Boolean(address),
-    refetchInterval: 10_000
+  const userProfileQuery = useQuery<UserProfile>({
+    queryKey: ["user", address],
+    queryFn: () => fetchJson<UserProfile>(`${env.backendUrl}/user/${address}`),
+    enabled: Boolean(address)
   });
 
-  const [slotReceipt, setSlotReceipt] = useState<TxReceipt | null>(null);
-  const [directReceipt, setDirectReceipt] = useState<TxReceipt | null>(null);
-  const [royaltyReceipt, setRoyaltyReceipt] = useState<TxReceipt | null>(null);
-  const [superRoyaltyReceipt, setSuperRoyaltyReceipt] = useState<TxReceipt | null>(null);
-  const [creatorReceipt, setCreatorReceipt] = useState<TxReceipt | null>(null);
-  const [flashReceipt, setFlashReceipt] = useState<TxReceipt | null>(null);
-  const [feesReceipt, setFeesReceipt] = useState<TxReceipt | null>(null);
-  const [feeWalletReceipt, setFeeWalletReceipt] = useState<TxReceipt | null>(null);
+  const explorerBase = useMemo(() => explorerForChain(configQuery.data?.chain), [configQuery.data?.chain]);
 
-  const slotForm = useForm<z.infer<typeof slotBuyFormSchema>>({
-    resolver: zodResolver(slotBuyFormSchema),
-    defaultValues: { referrer: ZERO_ADDRESS }
-  });
-  const directForm = useForm<z.infer<typeof directCommissionSchema>>({
-    resolver: zodResolver(directCommissionSchema)
-  });
-  const royaltyForm = useForm<z.infer<typeof royaltyTransferSchema>>({
-    resolver: zodResolver(royaltyTransferSchema)
-  });
-  const superRoyaltyForm = useForm<z.infer<typeof superRoyaltySchema>>({
-    resolver: zodResolver(superRoyaltySchema)
-  });
-  const creatorForm = useForm<z.infer<typeof creatorTransferSchema>>({
-    resolver: zodResolver(creatorTransferSchema)
-  });
-  const flashForm = useForm<z.infer<typeof flashTransferSchema>>({
-    resolver: zodResolver(flashTransferSchema)
-  });
-  const setFeeWalletsForm = useForm<z.infer<typeof setFeeWalletsSchema>>({
-    resolver: zodResolver(setFeeWalletsSchema)
-  });
-  const setFeesForm = useForm<z.infer<typeof setFeesSchema>>({
-    resolver: zodResolver(setFeesSchema),
-    defaultValues: {
-      feeType: "slotBuy",
-      platformFeeBps: 0,
-      creatorFeeBps: 0,
-      royaltyFeeBps: 0,
-      referrerFeeBps: 0
-    }
-  });
+  const distributorAbi = useMemo(() => configQuery.data?.contract.abi as Abi | undefined, [configQuery.data?.contract.abi]);
 
-  const slotMutation = useMutation({
-    mutationFn: (payload: z.infer<typeof slotBuyFormSchema>) => submit("/slot-buy", payload),
-    onSuccess: (receipt) => {
-      setSlotReceipt(receipt);
-      toast.success("Slot buy executed");
-      slotForm.reset({ referrer: ZERO_ADDRESS });
-      balanceQuery.refetch();
+  const slotPriceString = useMemo(() => {
+    const data = configQuery.data;
+    if (!data) return "0";
+    return data.slotPrices[selectedSlot - 1] ?? "0";
+  }, [configQuery.data, selectedSlot]);
+
+  const approveMutation = useMutation({
+    mutationFn: async () => {
+      if (!configQuery.data) throw new Error("Config not loaded");
+      const amount = parseUnits(slotPriceString, configQuery.data.tokenDecimals);
+      if (!walletClient) throw new Error("Connect wallet to continue");
+      if (!publicClient) throw new Error("Public client unavailable");
+      const hash = await walletClient.writeContract({
+        address: configQuery.data.usdtToken as `0x${string}`,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [configQuery.data.contract.address as `0x${string}`, amount]
+      });
+      toast.info("Approval submitted", { description: `Tx ${hash}` });
+      await publicClient.waitForTransactionReceipt({ hash });
+      toast.success("Approval confirmed");
+      setLastTx({ hash, label: `Approved USDT for slot ${selectedSlot}` });
     },
     onError: (error: unknown) => toast.error((error as Error).message)
   });
 
-  const directMutation = useMutation({
-    mutationFn: (payload: z.infer<typeof directCommissionSchema>) => submit("/direct-commission", payload),
-    onSuccess: (receipt) => {
-      setDirectReceipt(receipt);
-      toast.success("Direct commission executed");
-      directForm.reset();
-      balanceQuery.refetch();
+  const registerMutation = useMutation({
+    mutationFn: async () => {
+      if (!configQuery.data) throw new Error("Config not loaded");
+      if (!distributorAbi) throw new Error("ABI not available");
+      if (!walletClient) throw new Error("Connect wallet to continue");
+      if (!publicClient) throw new Error("Public client unavailable");
+      const hash = await walletClient.writeContract({
+        address: configQuery.data.contract.address as `0x${string}`,
+        abi: distributorAbi,
+        functionName: "registerApproval",
+        args: []
+      });
+      toast.info("Approval registered", { description: `Tx ${hash}` });
+      await publicClient.waitForTransactionReceipt({ hash });
+      toast.success("Registration mined. Wait one block before slot buy." );
+      setLastTx({ hash, label: "Registered approval" });
     },
     onError: (error: unknown) => toast.error((error as Error).message)
   });
 
-  const royaltyMutation = useMutation({
-    mutationFn: (payload: z.infer<typeof royaltyTransferSchema>) => submit("/royalty-transfer", payload),
-    onSuccess: (receipt) => {
-      setRoyaltyReceipt(receipt);
-      toast.success("Royalty transfer executed");
-      royaltyForm.reset();
-      balanceQuery.refetch();
+  const slotBuyMutation = useMutation({
+    mutationFn: async () => {
+      if (!configQuery.data) throw new Error("Config not loaded");
+      if (!sponsor) throw new Error("Sponsor required");
+      if (!distributorAbi) throw new Error("ABI not available");
+      if (!walletClient) throw new Error("Connect wallet to continue");
+      if (!publicClient) throw new Error("Public client unavailable");
+      const hash = await walletClient.writeContract({
+        address: configQuery.data.contract.address as `0x${string}`,
+        abi: distributorAbi,
+        functionName: "slotBuy",
+        args: [selectedSlot, sponsor as `0x${string}`]
+      });
+      toast.info("Slot purchase submitted", { description: `Tx ${hash}` });
+      await publicClient.waitForTransactionReceipt({ hash });
+      toast.success("Slot purchase confirmed" );
+      setLastTx({ hash, label: `Slot ${selectedSlot} purchased` });
+      userProfileQuery.refetch();
     },
     onError: (error: unknown) => toast.error((error as Error).message)
   });
 
-  const superRoyaltyMutation = useMutation({
-    mutationFn: (payload: z.infer<typeof superRoyaltySchema>) =>
-      submit("/super-royalty-transfer", {
-        recipient: payload.recipient,
-        amount: payload.amount,
-        payees: payload.payees,
-        bps: payload.bps
-      }),
-    onSuccess: (receipt) => {
-      setSuperRoyaltyReceipt(receipt);
-      toast.success("Super royalty transfer executed");
-      superRoyaltyForm.reset();
-      balanceQuery.refetch();
-    },
-    onError: (error: unknown) => toast.error((error as Error).message)
-  });
-
-  const creatorMutation = useMutation({
-    mutationFn: (payload: z.infer<typeof creatorTransferSchema>) => submit("/creator-transfer", payload),
-    onSuccess: (receipt) => {
-      setCreatorReceipt(receipt);
-      toast.success("Creator transfer executed");
-      creatorForm.reset();
-      balanceQuery.refetch();
-    },
-    onError: (error: unknown) => toast.error((error as Error).message)
-  });
-
-  const flashMutation = useMutation({
-    mutationFn: (payload: z.infer<typeof flashTransferSchema>) => submit("/flash-transfer", payload, true),
-    onSuccess: (receipt) => {
-      setFlashReceipt(receipt);
-      toast.success("Flash transfer executed");
-      flashForm.reset();
-      balanceQuery.refetch();
-    },
-    onError: (error: unknown) => toast.error((error as Error).message)
-  });
-
-  const setFeeWalletsMutation = useMutation({
-    mutationFn: (payload: z.infer<typeof setFeeWalletsSchema>) => submit("/set-fee-wallets", payload, true),
-    onSuccess: (receipt) => {
-      setFeeWalletReceipt(receipt);
-      toast.success("Fee wallets updated");
-      configQuery.refetch();
-    },
-    onError: (error: unknown) => toast.error((error as Error).message)
-  });
-
-  const setFeesMutation = useMutation({
-    mutationFn: (payload: z.infer<typeof setFeesSchema>) =>
-      submit(
-        "/set-fees",
-        {
-          feeType: payload.feeType,
-          config: {
-            platformFeeBps: payload.platformFeeBps,
-            creatorFeeBps: payload.creatorFeeBps,
-            royaltyFeeBps: payload.royaltyFeeBps,
-            referrerFeeBps: payload.referrerFeeBps
-          }
-        },
-        true
-      ),
-    onSuccess: (receipt) => {
-      setFeesReceipt(receipt);
-      toast.success("Fees updated");
-      configQuery.refetch();
-    },
-    onError: (error: unknown) => toast.error((error as Error).message)
-  });
-
-  const isAdmin = useMemo(() => {
-    if (!isConnected || !address || !configQuery.data) {
-      return false;
-    }
-    const lower = address.toLowerCase();
-    return Object.values(configQuery.data.wallets).some((wallet) => wallet.toLowerCase() === lower);
-  }, [address, isConnected, configQuery.data]);
+  const connectedAddress = address ?? "";
 
   return (
-    <div className="min-h-screen bg-slate-950">
+    <div className="min-h-screen bg-slate-950 text-slate-100">
       <Toaster richColors />
       <header className="border-b border-slate-900 bg-slate-950/70 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-6">
           <div>
-            <h1 className="text-2xl font-semibold text-emerald-300">LAB Token Dashboard</h1>
-            <p className="text-sm text-slate-400">
-              Manage token flows, fees, and advanced payouts on BSC Testnet
-            </p>
+            <h1 className="text-2xl font-semibold text-emerald-300">GAIN-USDT Control Center</h1>
+            <p className="text-sm text-slate-400">Interact with the slot distributor using mUSDT on BSC.</p>
           </div>
-          <ConnectButton />
+          <div className="flex items-center gap-3">
+            {isConnected && (
+              <span className="hidden text-xs text-slate-300 md:block">
+                <span className="font-mono text-emerald-400">{connectedAddress}</span>
+              </span>
+            )}
+            <ConnectButton showBalance={false} chainStatus="icon" accountStatus="address" />
+          </div>
         </div>
       </header>
 
-      <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
-        <section className="grid gap-4 md:grid-cols-3">
-          <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
-            <div className="text-sm text-slate-400">Network</div>
-            <div className="mt-1 text-lg font-semibold text-emerald-300">
-              {env.chainId === 11155111 ? "Ethereum Sepolia" : "BSC Testnet"}
-            </div>
-          </div>
-          <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
-            <div className="text-sm text-slate-400">Total Supply</div>
-            <div className="mt-1 text-lg font-semibold text-slate-100">
-              {configQuery.data?.totalSupply ?? "—"} {configQuery.data?.symbol ?? ""}
-            </div>
-          </div>
-          <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
-            <div className="text-sm text-slate-400">Your Balance</div>
-            <div className="mt-1 text-lg font-semibold text-slate-100">
-              {balanceQuery.data?.formatted ?? (isConnected ? "Loading…" : "—")}
-            </div>
-          </div>
-        </section>
-
-        <SectionCard title="Token Overview" description="Current fee settings and payout wallets.">
+      <main className="mx-auto flex max-w-5xl flex-col gap-6 px-6 py-8">
+        <SectionCard title="Network Summary">
           {configQuery.isLoading ? (
-            <div className="text-sm text-slate-400">Loading configuration…</div>
+            <div>Loading configuration…</div>
+          ) : configQuery.error ? (
+            <div className="text-red-400">{(configQuery.error as Error).message}</div>
           ) : configQuery.data ? (
-            <div className="grid gap-6 md:grid-cols-2">
+            <div className="grid gap-4 md:grid-cols-2">
               <div>
-                <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Fee Wallets</h4>
-                <dl className="mt-3 space-y-2 text-sm">
-                  {Object.entries(configQuery.data.wallets).map(([key, value]) => (
-                    <div key={key} className="flex flex-col rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                      <dt className="text-slate-400">{key}</dt>
-                      <dd className="font-mono text-emerald-200">{value}</dd>
-                    </div>
-                  ))}
-                </dl>
+                <div className="text-slate-400">Chain</div>
+                <div className="font-mono">{configQuery.data.chain}</div>
+                <div className="mt-2 text-slate-400">Distributor</div>
+                <div className="font-mono text-xs">{configQuery.data.contract.address}</div>
+                <div className="mt-2 text-slate-400">USDT Token</div>
+                <div className="font-mono text-xs">{configQuery.data.usdtToken}</div>
               </div>
               <div>
-                <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Fees (bps)</h4>
-                <div className="mt-3 space-y-3 text-sm">
-                  {Object.entries(configQuery.data.fees).map(([key, value]) => (
-                    <div key={key} className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                      <div className="text-emerald-300">{key}</div>
-                      <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-xs text-slate-300">
-                        <span>Platform: {value.platformFeeBps}</span>
-                        <span>Creator: {value.creatorFeeBps}</span>
-                        <span>Royalty: {value.royaltyFeeBps}</span>
-                        <span>Referrer: {value.referrerFeeBps}</span>
-                      </div>
+                <div className="text-slate-400">Creator Wallet</div>
+                <div className="font-mono text-xs">{configQuery.data.creatorWallet}</div>
+                <div className="mt-2 text-slate-400">Flash Wallet</div>
+                <div className="font-mono text-xs">{configQuery.data.flashWallet}</div>
+                <div className="mt-2 text-slate-400">Royalty %</div>
+                <div className="grid grid-cols-2 gap-x-4 text-xs">
+                  {Object.entries(configQuery.data.royaltyBps).map(([level, bp]) => (
+                    <div key={level} className="flex justify-between">
+                      <span>L{level}</span>
+                      <span>{Number(bp) / 100}%</span>
                     </div>
                   ))}
                 </div>
               </div>
             </div>
-          ) : (
-            <div className="text-sm text-red-400">{configQuery.error?.message}</div>
-          )}
+          ) : null}
         </SectionCard>
 
-        <SectionCard title="API Key" description="Required for admin-only endpoints and flash transfers.">
-          <div className="flex flex-wrap items-center gap-3">
-            <input
-              type="password"
-              placeholder="Enter API key"
-              value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
-              className="flex-1 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 md:max-w-xs"
-            />
-            <span className="text-xs text-slate-400">
-              Supplied as `X-API-Key` header to privileged backend routes.
-            </span>
+        <SectionCard title="Slot Prices">
+          <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-3">
+            {configQuery.data?.slotPrices.map((price, index) => (
+              <div
+                key={index}
+                className={clsx(
+                  "rounded-lg border border-slate-800 bg-slate-950/60 p-3",
+                  selectedSlot === index + 1 && "border-emerald-400"
+                )}
+              >
+                <div className="text-slate-400">Slot {index + 1}</div>
+                <div className="text-lg font-semibold">{price} USDT</div>
+                <button
+                  className="mt-2 w-full rounded bg-emerald-500 px-3 py-1 text-xs font-semibold text-slate-950 hover:bg-emerald-400"
+                  onClick={() => setSelectedSlot(index + 1)}
+                >
+                  Select
+                </button>
+              </div>
+            ))}
           </div>
         </SectionCard>
 
-        <div className="grid gap-6 lg:grid-cols-2">
-          <SectionCard title="Slot Buy" description="Distribute platform, creator, royalty, and referral fees.">
-            <form
-              className="space-y-3"
-              onSubmit={slotForm.handleSubmit((values) => slotMutation.mutate(values))}
+        <SectionCard title="Approval & Purchase Flow">
+          <p className="text-xs text-slate-400">
+            Step 1: Approve mUSDT for the contract. Step 2: Register approval (wait one block). Step 3: Execute slot purchase.
+          </p>
+          <div className="flex flex-col gap-3 md:flex-row">
+            <button
+              className="rounded bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
+              onClick={() => approveMutation.mutate()}
+              disabled={approveMutation.isPending}
             >
+              {approveMutation.isPending ? "Approving…" : `Approve Slot ${selectedSlot}`}
+            </button>
+            <button
+              className="rounded bg-slate-800 px-4 py-2 text-sm font-semibold hover:bg-slate-700"
+              onClick={() => registerMutation.mutate()}
+              disabled={registerMutation.isPending}
+            >
+              {registerMutation.isPending ? "Registering…" : "Register Approval"}
+            </button>
+            <div className="flex flex-1 items-center gap-2">
               <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Recipient"
-                {...slotForm.register("recipient")}
-              />
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Amount (tokens)"
-                {...slotForm.register("amount")}
-              />
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Referrer (optional)"
-                {...slotForm.register("referrer")}
+                className="flex-1 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-emerald-400 focus:outline-none"
+                placeholder="Sponsor address"
+                value={sponsor}
+                onChange={(event) => setSponsor(event.target.value)}
               />
               <button
-                type="submit"
-                className={clsx(
-                  "w-full rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400",
-                  slotMutation.isPending && "opacity-70"
-                )}
-                disabled={slotMutation.isPending}
+                className="rounded bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
+                onClick={() => slotBuyMutation.mutate()}
+                disabled={slotBuyMutation.isPending}
               >
-                {slotMutation.isPending ? "Submitting…" : "Execute slot buy"}
+                {slotBuyMutation.isPending ? "Buying…" : `Buy Slot ${selectedSlot}`}
               </button>
-              <FormErrors errors={slotForm.formState.errors} />
-            </form>
-            <TxReceiptCard receipt={slotReceipt} title="Latest Slot Buy" explorerBase={explorerBase} />
-          </SectionCard>
+            </div>
+          </div>
+          <TxReceiptCard hash={lastTx?.hash ?? null} label={lastTx?.label ?? "Last Transaction"} explorerBase={explorerBase} />
+        </SectionCard>
 
-          <SectionCard
-            title="Direct Commission"
-            description="Split sale proceeds between seller and platform/creator fees."
-          >
-            <form
-              className="space-y-3"
-              onSubmit={directForm.handleSubmit((values) => directMutation.mutate(values))}
-            >
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Seller address"
-                {...directForm.register("seller")}
-              />
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Amount"
-                {...directForm.register("amount")}
-              />
-              <button
-                type="submit"
-                className={clsx(
-                  "w-full rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400",
-                  directMutation.isPending && "opacity-70"
-                )}
-                disabled={directMutation.isPending}
-              >
-                {directMutation.isPending ? "Submitting…" : "Execute direct commission"}
-              </button>
-              <FormErrors errors={directForm.formState.errors} />
-            </form>
-            <TxReceiptCard receipt={directReceipt} title="Latest Direct Commission" explorerBase={explorerBase} />
-          </SectionCard>
-
-          <SectionCard title="Royalty Transfer" description="Route secondary royalties with platform cut.">
-            <form
-              className="space-y-3"
-              onSubmit={royaltyForm.handleSubmit((values) => royaltyMutation.mutate(values))}
-            >
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Recipient"
-                {...royaltyForm.register("recipient")}
-              />
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Amount"
-                {...royaltyForm.register("amount")}
-              />
-              <button
-                type="submit"
-                className={clsx(
-                  "w-full rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400",
-                  royaltyMutation.isPending && "opacity-70"
-                )}
-                disabled={royaltyMutation.isPending}
-              >
-                {royaltyMutation.isPending ? "Submitting…" : "Execute royalty transfer"}
-              </button>
-              <FormErrors errors={royaltyForm.formState.errors} />
-            </form>
-            <TxReceiptCard receipt={royaltyReceipt} title="Latest Royalty Transfer" explorerBase={explorerBase} />
-          </SectionCard>
-
-          <SectionCard
-            title="Super Royalty Transfer"
-            description="Split payouts across multiple payees (comma separated addresses and BPS)."
-          >
-            <form
-              className="space-y-3"
-              onSubmit={superRoyaltyForm.handleSubmit((values) => superRoyaltyMutation.mutate(values))}
-            >
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Recipient"
-                {...superRoyaltyForm.register("recipient")}
-              />
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Amount"
-                {...superRoyaltyForm.register("amount")}
-              />
-              <textarea
-                className="h-20 w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Payees (comma separated addresses)"
-                {...superRoyaltyForm.register("payees")}
-              />
-              <textarea
-                className="h-20 w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="BPS (comma separated numbers)"
-                {...superRoyaltyForm.register("bps")}
-              />
-              <button
-                type="submit"
-                className={clsx(
-                  "w-full rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400",
-                  superRoyaltyMutation.isPending && "opacity-70"
-                )}
-                disabled={superRoyaltyMutation.isPending}
-              >
-                {superRoyaltyMutation.isPending ? "Submitting…" : "Execute super royalty transfer"}
-              </button>
-              <FormErrors errors={superRoyaltyForm.formState.errors} />
-            </form>
-            <TxReceiptCard
-              receipt={superRoyaltyReceipt}
-              title="Latest Super Royalty Transfer"
-              explorerBase={explorerBase}
-            />
-          </SectionCard>
-
-          <SectionCard title="Creator Transfer" description="Send token with creator fee split.">
-            <form
-              className="space-y-3"
-              onSubmit={creatorForm.handleSubmit((values) => creatorMutation.mutate(values))}
-            >
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Recipient"
-                {...creatorForm.register("recipient")}
-              />
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Amount"
-                {...creatorForm.register("amount")}
-              />
-              <button
-                type="submit"
-                className={clsx(
-                  "w-full rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400",
-                  creatorMutation.isPending && "opacity-70"
-                )}
-                disabled={creatorMutation.isPending}
-              >
-                {creatorMutation.isPending ? "Submitting…" : "Execute creator transfer"}
-              </button>
-              <FormErrors errors={creatorForm.formState.errors} />
-            </form>
-            <TxReceiptCard receipt={creatorReceipt} title="Latest Creator Transfer" explorerBase={explorerBase} />
-          </SectionCard>
-
-          <SectionCard title="Flash Transfer" description="Requires FLASH_ROLE and API key.">
-            <form
-              className="space-y-3"
-              onSubmit={flashForm.handleSubmit((values) => flashMutation.mutate(values))}
-            >
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Recipient"
-                {...flashForm.register("to")}
-              />
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                placeholder="Amount"
-                {...flashForm.register("amount")}
-              />
-              <button
-                type="submit"
-                className={clsx(
-                  "w-full rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400",
-                  flashMutation.isPending && "opacity-70"
-                )}
-                disabled={flashMutation.isPending}
-              >
-                {flashMutation.isPending ? "Submitting…" : "Execute flash transfer"}
-              </button>
-              <FormErrors errors={flashForm.formState.errors} />
-            </form>
-            <TxReceiptCard receipt={flashReceipt} title="Latest Flash Transfer" explorerBase={explorerBase} />
-          </SectionCard>
-        </div>
-
-        {isAdmin && (
-          <SectionCard title="Admin Panel" description="Update fee wallets, fee schedules, and manage roles.">
-            <div className="grid gap-6 lg:grid-cols-2">
+        {isConnected && userProfileQuery.data && (
+          <SectionCard title="Your Profile">
+            <div className="grid gap-3 md:grid-cols-2">
               <div>
-                <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Set Fee Wallets</h4>
-                <form
-                  className="mt-3 space-y-3"
-                  onSubmit={setFeeWalletsForm.handleSubmit((values) => setFeeWalletsMutation.mutate(values))}
-                >
-                  <input
-                    className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                    placeholder="Platform wallet"
-                    {...setFeeWalletsForm.register("platformWallet")}
-                  />
-                  <input
-                    className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                    placeholder="Creator wallet"
-                    {...setFeeWalletsForm.register("creatorWallet")}
-                  />
-                  <input
-                    className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                    placeholder="Royalty wallet"
-                    {...setFeeWalletsForm.register("royaltyWallet")}
-                  />
-                  <button
-                    type="submit"
-                    className={clsx(
-                      "w-full rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400",
-                      setFeeWalletsMutation.isPending && "opacity-70"
-                    )}
-                    disabled={setFeeWalletsMutation.isPending}
-                  >
-                    {setFeeWalletsMutation.isPending ? "Saving…" : "Update fee wallets"}
-                  </button>
-                  <FormErrors errors={setFeeWalletsForm.formState.errors} />
-                </form>
-                <TxReceiptCard receipt={feeWalletReceipt} title="Latest Fee Wallet Update" explorerBase={explorerBase} />
+                <div className="text-slate-400">Referrer</div>
+                <div className="font-mono text-xs">{userProfileQuery.data.referrer || "None"}</div>
+                <div className="mt-2 text-slate-400">Highest Slot Owned</div>
+                <div>{userProfileQuery.data.maxSlot}</div>
               </div>
-
               <div>
-                <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Set Fees</h4>
-                <form
-                  className="mt-3 space-y-3"
-                  onSubmit={setFeesForm.handleSubmit((values) => setFeesMutation.mutate(values))}
-                >
-                  <select
-                    className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                    {...setFeesForm.register("feeType")}
-                  >
-                    <option value="slotBuy">Slot Buy</option>
-                    <option value="directCommission">Direct Commission</option>
-                    <option value="royaltyTransfer">Royalty Transfer</option>
-                    <option value="superRoyaltyTransfer">Super Royalty Transfer</option>
-                    <option value="creatorTransfer">Creator Transfer</option>
-                    <option value="flashTransfer">Flash Transfer</option>
-                  </select>
-                  {["platformFeeBps", "creatorFeeBps", "royaltyFeeBps", "referrerFeeBps"].map((field) => (
-                    <input
-                      key={field}
-                      type="number"
-                      className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none"
-                      placeholder={`${field} (bps)`}
-                      {...setFeesForm.register(field as keyof z.infer<typeof setFeesSchema>)}
-                    />
-                  ))}
-                  <button
-                    type="submit"
-                    className={clsx(
-                      "w-full rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400",
-                      setFeesMutation.isPending && "opacity-70"
-                    )}
-                    disabled={setFeesMutation.isPending}
-                  >
-                    {setFeesMutation.isPending ? "Saving…" : "Update fees"}
-                  </button>
-                  <FormErrors errors={setFeesForm.formState.errors} />
-                </form>
-                <TxReceiptCard receipt={feesReceipt} title="Latest Fee Update" explorerBase={explorerBase} />
+                <div className="text-slate-400">Registered Allowance</div>
+                <div>{userProfileQuery.data.registeredAllowance.allowance} USDT</div>
+                <div className="text-xs text-slate-500">Recorded at block {userProfileQuery.data.registeredAllowance.blockNum}</div>
+              </div>
+            </div>
+            <div>
+              <div className="text-slate-400">Qualified Directs</div>
+              <div className="mt-1 grid grid-cols-3 gap-2 text-xs">
+                {userProfileQuery.data.qualifiedDirects.map((item) => (
+                  <div key={item.level} className="rounded border border-slate-800 bg-slate-950/60 p-2">
+                    <div>L{item.level}</div>
+                    <div className="font-semibold">{item.count}</div>
+                  </div>
+                ))}
               </div>
             </div>
           </SectionCard>
         )}
-      </main>
 
-      <footer className="border-t border-slate-900 bg-slate-950/70 py-6">
-        <div className="mx-auto max-w-6xl px-6 text-sm text-slate-500">
-          Connected contract:{" "}
-          <span className="font-mono text-emerald-200">{configQuery.data?.contract.address ?? "—"}</span>
-        </div>
-      </footer>
+      </main>
     </div>
   );
 };
